@@ -1,0 +1,139 @@
+services:
+  # --- Main Application Service ---
+  aac-gitlab:
+    image: "gitlab/gitlab-ce:18.9.1-ce.0"
+    container_name: "aac-gitlab"
+    hostname: "gitlab"
+    restart: "unless-stopped"
+
+
+    environment:
+      TZ: "Europe/Berlin"
+      GITLAB_ROOT_PASSWORD: "${GITLAB_ROOT_PASSWORD:?set GITLAB_ROOT_PASSWORD in .env (see .env.example)}"
+      GITLAB_OMNIBUS_CONFIG: "external_url \"https://gitlab.example.com\"\ngitlab_rails[\u0027gitlab_shell_ssh_port\u0027] = 2222\nnginx[\u0027listen_port\u0027] = 80\nnginx[\u0027listen_https\u0027] = false\n\n# --- DB \u0026 REDIS (External) ---\npostgresql[\u0027enable\u0027] = false\ngitlab_rails[\u0027db_adapter\u0027] = \"postgresql\"\ngitlab_rails[\u0027db_host\u0027] = \"aac-gitlab-db\"\ngitlab_rails[\u0027db_password\u0027] = \"CHANGE_ME\"\ngitlab_rails[\u0027db_username\u0027] = \"gitlab\"\ngitlab_rails[\u0027db_database\u0027] = \"gitlabhq_production\"\n\nredis[\u0027enable\u0027] = false\ngitlab_rails[\u0027redis_host\u0027] = \"aac-gitlab-redis\"\ngitlab_rails[\u0027redis_port\u0027] = 6379\n\n# --- PERFORMANCE \u0026 LOGGING ---\nnginx[\u0027proxy_connect_timeout\u0027] = 600\nnginx[\u0027proxy_read_timeout\u0027] = 600\npuma[\u0027worker_timeout\u0027] = 600\npuma[\u0027worker_processes\u0027] = 8\ngitlab_rails[\u0027db_pool\u0027] = 450\nsidekiq[\u0027concurrency\u0027] = 100\ngitlab_rails[\u0027log_level\u0027] = \u0027warn\u0027\nlogging[\u0027log_level\u0027] = \u0027warn\u0027\n\n# --- REGISTRY \u0026 PAGES ---\nregistry_external_url \u0027https://registry.gitlab.example.com\u0027\ngitlab_rails[\u0027registry_enabled\u0027] = true\nregistry[\u0027enable\u0027] = true\nregistry[\u0027registry_http_addr\u0027] = \"0.0.0.0:5000\"\nregistry_nginx[\u0027enable\u0027] = false\n\npages_external_url \u0027https://sites.gitlab.example.com\u0027\ngitlab_pages[\u0027enable\u0027] = true\npages_nginx[\u0027enable\u0027] = false\ngitlab_pages[\u0027external_http\u0027] = [\u00270.0.0.0:8091\u0027]\ngitlab_pages[\u0027internal_gitlab_server\u0027] = \u0027http://localhost:80\u0027\ngitlab_pages[\u0027artifacts_server\u0027] = true\n\n# --- AUTHENTIK OIDC ---\ngitlab_rails[\u0027omniauth_enabled\u0027] = true\ngitlab_rails[\u0027omniauth_allow_single_sign_on\u0027] = [\u0027openid_connect\u0027]\ngitlab_rails[\u0027omniauth_block_auto_created_users\u0027] = false\ngitlab_rails[\u0027omniauth_providers\u0027] = [{\n  name: \"openid_connect\",\n  label: \"Authentik\",\n  args: {\n    name: \"openid_connect\",\n    scope: [\"openid\", \"profile\", \"email\", \"groups\"],\n    response_type: \"code\",\n    issuer: \"https://auth.example.com/application/o/gitlab-titan/\",\n    discovery: true,\n    uid_field: \"preferred_username\",\n    client_auth_method: \"query\",\n    client_options: {\n      identifier: \"CHANGE_ME\",\n      secret: \"CHANGE_ME\",\n      redirect_uri: \"https://gitlab.example.com/users/auth/openid_connect/callback\"\n    }\n  }\n}]"
+
+    ports:
+      - "8888:80/tcp"
+      - "2222:22/tcp"
+      - "5000:5000/tcp"
+      - "8091:8091/tcp"
+
+    volumes:
+      - "/export/docker/aac-gitlab/config:/etc/gitlab"
+      - "/export/docker/aac-gitlab/data:/var/opt/gitlab"
+      - "/export/docker/aac-gitlab/logs:/var/log/gitlab"
+
+    networks:
+      - exposed
+      - interconnect
+      - secured
+      - stack_internal
+
+    labels:
+      traefik.enable: "true"
+      traefik.http.routers.aac-gitlab.rule: "Host(`gitlab.example.com`)"
+      traefik.http.routers.aac-gitlab.entrypoints: "websecure"
+      traefik.http.routers.aac-gitlab.tls: "true"
+      traefik.http.routers.aac-gitlab.tls.certresolver: "ionos"
+      traefik.docker.network: "services-secured"
+      traefik.http.services.aac-gitlab.loadbalancer.server.port: "80"
+      traefik.http.services.aac-gitlab.loadbalancer.server.scheme: "http"
+      auto-dns.createWildcard.aac-gitlab: "true"
+      auto-dns.customDNS.aac-gitlab: "true"
+      auto-dns.customDOMAIN.aac-gitlab: "example.com"
+      auto-dns.customHost.aac-gitlab: "gitlab"
+      homepage.group: "Development"
+      homepage.name: "Gitlab"
+      homepage.href: "https://gitlab.example.com"
+      homepage.icon: "https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/gitlab.png"
+      homepage.description: "GitLab Source Code Management & Container Registry"
+
+
+    depends_on:
+      aac-gitlab-db:
+        condition: service_healthy
+      aac-gitlab-redis:
+        condition: service_healthy
+
+
+  # --- Service Dependencies (Sidecars) ---
+  aac-gitlab-db:
+    image: "postgres:16"
+    container_name: "aac-gitlab-db"
+    restart: "always"
+    
+    command:
+      - "postgres"
+      - "-c"
+      - "max_connections=500"
+      - "-c"
+      - "shared_buffers=2GB"
+
+    env_file:
+      - .env
+    environment:
+      TZ: "Europe/Berlin"
+      POSTGRES_USER: "gitlab"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env (see .env.example)}"
+      POSTGRES_DB: "gitlabhq_production"
+
+
+    volumes:
+      - "/export/docker/aac-gitlab/db:/var/lib/postgresql/data"
+
+    networks:
+      - stack_internal
+
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER:-postgres}\" -d \"$${POSTGRES_DB:-postgres}\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+
+  aac-gitlab-redis:
+    image: "redis:7.4"
+    container_name: "aac-gitlab-redis"
+    restart: "always"
+    
+    command:
+      - "redis-server"
+      - "--appendonly"
+      - "yes"
+
+    env_file:
+      - .env
+    environment:
+      TZ: "Europe/Berlin"
+
+
+    volumes:
+      - "/export/docker/aac-gitlab/redis-data:/data"
+
+    networks:
+      - stack_internal
+
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+
+
+networks:
+  secured:
+    name: "services-secured"
+    external: true
+  exposed:
+    name: "services-exposed"
+    external: true
+  interconnect:
+    name: "docker-default"
+    external: true
+  stack_internal:
+    name: "aac-gitlab_stack_internal"
+    driver: "bridge"
+

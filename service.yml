@@ -1,0 +1,177 @@
+service:
+  name: aac-gitlab
+  image_repo: gitlab/gitlab-ce
+  image_tag: 18.9.1-ce.0
+  description: GitLab Source Code Management & Container Registry
+  icon: https://cdn.jsdelivr.net/gh/walkxcode/dashboard-icons/png/gitlab.png
+  category: Development
+  stage: prod
+  hostname: gitlab
+ports:
+- name: web
+  port: 80
+  external_port: 8888
+  protocol: TCP
+- name: ssh
+  port: 22
+  external_port: 2222
+  protocol: TCP
+- name: registry
+  port: 5000
+  external_port: 5000
+  protocol: TCP
+- name: pages
+  port: 8091
+  external_port: 8091
+  protocol: TCP
+config:
+  domain_name: example.com
+  generate_hostname: false
+  integrations:
+    homepage:
+      enabled: true
+    autodns:
+      enabled: true
+      create_wildcard: true
+    traefik:
+      enabled: true
+      cert_resolver: ionos
+      entrypoint: websecure
+      service_port: 80
+  schema_version: 2
+secrets:
+  GITLAB_ROOT_PASSWORD: CHANGE_ME
+  POSTGRES_PASSWORD: CHANGE_ME
+  AUTHENTIK_OIDC_CLIENT_ID: CHANGE_ME
+  AUTHENTIK_OIDC_CLIENT_SECRET: CHANGE_ME
+volumes:
+  gitlab_config:
+    type: bind
+    source: /export/docker/aac-gitlab/config
+    target: /etc/gitlab
+    description: GitLab Omnibus configuration
+  gitlab_data:
+    type: bind
+    source: /export/docker/aac-gitlab/data
+    target: /var/opt/gitlab
+    description: GitLab application data
+  gitlab_logs:
+    type: bind
+    source: /export/docker/aac-gitlab/logs
+    target: /var/log/gitlab
+    description: GitLab logs
+deployment_strategy:
+  main:
+    enabled: true
+    target_stage: prod
+  dev:
+    enabled: true
+    target_stage: dev
+  test:
+    enabled: false
+    target_stage: test
+  ansible-dev:
+    enabled: true
+    target_stage: dev
+  iac-dev:
+    enabled: true
+    target_stage: dev
+  template-dev:
+    enabled: true
+    target_stage: dev
+deployments:
+  docker_compose:
+    restart_policy: unless-stopped
+    host_base_path: /export/docker
+    networks_to_join:
+    - secured
+    - stack_internal
+    depends_on:
+    - service: aac-gitlab-db
+      condition: service_healthy
+    - service: aac-gitlab-redis
+      condition: service_started
+    volumes:
+    - gitlab_config:/etc/gitlab
+    - gitlab_data:/var/opt/gitlab
+    - gitlab_logs:/var/log/gitlab
+    environment:
+      TZ: '{{ vars.TZ }}'
+      GITLAB_ROOT_PASSWORD: '{{ secrets.GITLAB_ROOT_PASSWORD }}'
+      GITLAB_OMNIBUS_CONFIG: "external_url \"{{ vars.GITLAB_EXTERNAL_URL }}\"\ngitlab_rails['gitlab_shell_ssh_port']\
+        \ = 2222\nnginx['listen_port'] = 80\nnginx['listen_https'] = false\n\n# ---\
+        \ DB & REDIS (External) ---\npostgresql['enable'] = false\ngitlab_rails['db_adapter']\
+        \ = \"postgresql\"\ngitlab_rails['db_host'] = \"{{ vars.DB_HOST }}\"\ngitlab_rails['db_password']\
+        \ = \"{{ secrets.POSTGRES_PASSWORD }}\"\ngitlab_rails['db_username'] = \"\
+        {{ vars.DB_USER }}\"\ngitlab_rails['db_database'] = \"{{ vars.DB_NAME }}\"\
+        \n\nredis['enable'] = false\ngitlab_rails['redis_host'] = \"{{ vars.REDIS_HOST\
+        \ }}\"\ngitlab_rails['redis_port'] = 6379\n\n# --- PERFORMANCE & LOGGING ---\n\
+        nginx['proxy_connect_timeout'] = 600\nnginx['proxy_read_timeout'] = 600\n\
+        puma['worker_timeout'] = 600\npuma['worker_processes'] = 8\ngitlab_rails['db_pool']\
+        \ = 450\nsidekiq['concurrency'] = 100\ngitlab_rails['log_level'] = 'warn'\n\
+        logging['log_level'] = 'warn'\n\n# --- REGISTRY & PAGES ---\nregistry_external_url\
+        \ 'https://{{ vars.GITLAB_REGISTRY_DOMAIN }}'\ngitlab_rails['registry_enabled']\
+        \ = true\nregistry['enable'] = true\nregistry['registry_http_addr'] = \"0.0.0.0:5000\"\
+        \nregistry_nginx['enable'] = false\n\npages_external_url 'https://{{ vars.GITLAB_PAGES_DOMAIN\
+        \ }}'\ngitlab_pages['enable'] = true\npages_nginx['enable'] = false\ngitlab_pages['external_http']\
+        \ = ['0.0.0.0:8091']\ngitlab_pages['internal_gitlab_server'] = 'http://localhost:80'\n\
+        gitlab_pages['artifacts_server'] = true\n\n# --- AUTHENTIK OIDC ---\ngitlab_rails['omniauth_enabled']\
+        \ = true\ngitlab_rails['omniauth_allow_single_sign_on'] = ['openid_connect']\n\
+        gitlab_rails['omniauth_block_auto_created_users'] = false\ngitlab_rails['omniauth_providers']\
+        \ = [{\n  name: \"openid_connect\",\n  label: \"Authentik\",\n  args: {\n\
+        \    name: \"openid_connect\",\n    scope: [\"openid\", \"profile\", \"email\"\
+        , \"groups\"],\n    response_type: \"code\",\n    issuer: \"{{ vars.AUTHENTIK_OIDC_ISSUER\
+        \ }}\",\n    discovery: true,\n    uid_field: \"preferred_username\",\n  \
+        \  client_auth_method: \"query\",\n    client_options: {\n      identifier:\
+        \ \"{{ secrets.AUTHENTIK_OIDC_CLIENT_ID }}\",\n      secret: \"{{ secrets.AUTHENTIK_OIDC_CLIENT_SECRET\
+        \ }}\",\n      redirect_uri: \"{{ vars.GITLAB_EXTERNAL_URL }}/users/auth/openid_connect/callback\"\
+        \n    }\n  }\n}]\n"
+dependencies:
+  database:
+    import: catalog/postgres.yml
+    overrides:
+      name: aac-gitlab-db
+      image_tag: '16'
+      command:
+      - postgres
+      - -c
+      - max_connections=500
+      - -c
+      - shared_buffers=2GB
+      volumes:
+        db:
+          target: /var/lib/postgresql/data
+          description: Persistent storage for the GitLab database
+      networks_to_join:
+      - stack_internal
+      environment:
+        TZ: '{{ vars.TZ }}'
+        POSTGRES_USER: '{{ vars.DB_USER }}'
+        POSTGRES_PASSWORD: '{{ secrets.POSTGRES_PASSWORD }}'
+        POSTGRES_DB: '{{ vars.DB_NAME }}'
+  cache:
+    import: catalog/redis.yml
+    overrides:
+      name: aac-gitlab-redis
+      image_tag: '7.4'
+      command:
+      - redis-server
+      - --appendonly
+      - 'yes'
+      volumes:
+        redis-data:
+          target: /data
+      networks_to_join:
+      - stack_internal
+      environment:
+        TZ: '{{ vars.TZ }}'
+vars:
+  TZ: Europe/Berlin
+  GITLAB_EXTERNAL_URL: https://gitlab.example.com
+  GITLAB_REGISTRY_DOMAIN: registry.gitlab.example.com
+  GITLAB_PAGES_DOMAIN: sites.gitlab.example.com
+  DB_HOST: aac-gitlab-db
+  DB_NAME: gitlabhq_production
+  DB_USER: gitlab
+  REDIS_HOST: aac-gitlab-redis
+  AUTHENTIK_OIDC_ISSUER: https://auth.example.com/application/o/gitlab-titan/
